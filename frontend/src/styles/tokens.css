@@ -1,0 +1,137 @@
+/* =========================================================================
+   LedgerLite design tokens
+   =========================================================================
+
+   The interface is a ledger: ruled paper, hairline rules instead of shadows,
+   right-aligned tabular figures, near-rectilinear corners. The chrome is
+   deliberately achromatic, because Contract 2 hands us a fixed ten-colour
+   category palette and that palette has to stay the ONLY saturated colour in
+   the product. A category is then instantly recognisable in the pie, the bars,
+   the gauges and the ledger rows, because nothing else on screen competes with
+   it. Two functional colours survive - a deep ink-blue for interaction and a
+   ledger red for danger - and both are dark and desaturated on purpose.
+
+   Every text colour below is checked against its own background:
+     light  ink 16.0:1 · ink-muted 5.9:1 · ink-faint 4.6:1
+     dark   ink 15.6:1 · ink-muted 7.9:1 · ink-faint 5.6:1
+   ========================================================================= */
+
+:root {
+  color-scheme: light dark;
+
+  /* --- Type families ---------------------------------------------------
+     A high-contrast editorial serif for display figures, a grotesque for UI
+     text, and a mono for every number that lives in a column. */
+  --font-display: 'Instrument Serif', 'Iowan Old Style', 'Palatino Linotype', Georgia, serif;
+  --font-ui: 'Archivo', 'Helvetica Neue', -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, monospace;
+
+  /* --- Type scale (1.25, anchored at 15px) ---------------------------- */
+  --text-3xs: 0.6875rem;
+  --text-2xs: 0.75rem;
+  --text-xs: 0.8125rem;
+  --text-sm: 0.875rem;
+  --text-base: 0.9375rem;
+  --text-md: 1.0625rem;
+  --text-lg: 1.375rem;
+  --text-xl: 1.75rem;
+  --text-2xl: 2.25rem;
+  --text-display: clamp(2.5rem, 6.5vw, 4rem);
+
+  /* --- Spacing (4px rhythm) ------------------------------------------- */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+
+  /* --- Geometry -------------------------------------------------------- */
+  --radius-sm: 2px;
+  --radius-md: 3px;
+  --control-h: 44px;
+  --control-h-sm: 36px;
+  --page-max: 1180px;
+
+  /* --- Motion ---------------------------------------------------------- */
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+  --dur-fast: 150ms;
+  --dur-base: 220ms;
+  --dur-slow: 420ms;
+
+  /* --- Layering -------------------------------------------------------- */
+  --z-grain: 1;
+  --z-sticky: 10;
+  --z-overlay: 30;
+  --z-toast: 50;
+
+  /* --- Light: paper ---------------------------------------------------- */
+  --paper: #fbfaf7;
+  --surface: #ffffff;
+  --surface-sunken: #f4f2ec;
+  --ink: #14161a;
+  --ink-muted: #565d66;
+  --ink-faint: #6b7079;
+  --rule: #e4e0d8;
+  --rule-strong: #c6c1b5;
+  --accent: #1d3a63;
+  --accent-hover: #142b4a;
+  --accent-contrast: #ffffff;
+  --accent-wash: #e9edf3;
+  --danger: #a4291e;
+  --danger-contrast: #ffffff;
+  --danger-wash: #f8e9e7;
+  --positive: #2f6b4f;
+  --grain-opacity: 0.032;
+  --grain-blend: multiply;
+}
+
+/* Dark by system preference, unless the user has explicitly chosen light. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --paper: #0f1114;
+    --surface: #16191d;
+    --surface-sunken: #101317;
+    --ink: #ece9e2;
+    --ink-muted: #a2a8b0;
+    --ink-faint: #868d96;
+    --rule: #262a2f;
+    --rule-strong: #3b4149;
+    --accent: #8fb0dc;
+    --accent-hover: #a9c3e6;
+    --accent-contrast: #0f1114;
+    --accent-wash: #1a2230;
+    --danger: #e8837a;
+    --danger-contrast: #16191d;
+    --danger-wash: #2a1a19;
+    --positive: #6fbf97;
+    --grain-opacity: 0;
+    --grain-blend: normal;
+  }
+}
+
+/* An explicit dark choice wins in both directions. */
+:root[data-theme='dark'] {
+  --paper: #0f1114;
+  --surface: #16191d;
+  --surface-sunken: #101317;
+  --ink: #ece9e2;
+  --ink-muted: #a2a8b0;
+  --ink-faint: #868d96;
+  --rule: #262a2f;
+  --rule-strong: #3b4149;
+  --accent: #8fb0dc;
+  --accent-hover: #a9c3e6;
+  --accent-contrast: #0f1114;
+  --accent-wash: #1a2230;
+  --danger: #e8837a;
+  --danger-contrast: #16191d;
+  --danger-wash: #2a1a19;
+  --positive: #6fbf97;
+  --grain-opacity: 0;
+  --grain-blend: normal;
+}

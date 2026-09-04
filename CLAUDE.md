@@ -483,7 +483,7 @@ Follow the `swarm-worker` runtime protocol for all shared-file, escalation, and 
 
 ---
 
-## INSTANCE 2 — Frontend Dashboard  ·  STATUS: PENDING
+## INSTANCE 2 — Frontend Dashboard  ·  STATUS: DONE
 
 **Owns:** `frontend/` in full — `src/` (pages, components, charts, api client, mock layer, auth
 context, hooks, formatting helpers), `index.html`, `package.json`, `vite.config.ts`, `tsconfig*.json`,
@@ -553,7 +553,70 @@ component styling.
 Follow the `swarm-worker` runtime protocol for all shared-file, escalation, and git rules.
 
 **Work log:**
-(instance writes only here)
+2026-09-04 — Instance 2 — Frontend complete.
+
+**Built.** Full React 19 + Vite + TypeScript app in `frontend/`. Signup, login, the expense
+ledger with add/edit/delete, per-category budget settings, and the three visualizations.
+41 source files, strict TS (`exactOptionalPropertyTypes`, `noUncheckedIndexedAccess`) clean,
+114 tests green, production build clean.
+
+**Where things live.** `src/api/` — contract types, client, endpoints, the frozen Contract 2
+list, the mock backend. `src/auth/` — session state machine, provider, route guards.
+`src/charts/` — the three visualizations. `src/pages/`, `src/components/`, `src/features/`,
+`src/hooks/`, `src/lib/`, `src/styles/`, `src/test/`.
+
+**Mock layer.** `src/api/mocks.ts` is a `fetch`-shaped implementation of Contracts 1–6, swapped
+in as the client's transport by `VITE_USE_MOCKS=true`. The client above it is unchanged in
+mocked and real mode, so the refresh dance, credential handling and error parsing are the
+same code path either way. Seeded demo account: `demo@ledgerlite.app` / `demo1234`.
+
+**Conformance suite.** `src/test/contract-conformance.test.ts` (61 tests) asserts the mock
+against the contract *text* — status codes, field names, error sentences, orderings, inclusion
+rules. It is a ready-made checklist for the Reconciler: point it at Instance 1's real API and
+every expectation is a question already asked. Notable coverage: no-enumeration byte-identity,
+404-not-403 cross-user access on expenses and budgets with the victim's row verified intact,
+5b's inclusion rule and its spent-DESC-then-Contract-2-order tie-break, 5c's zero-filled
+contiguous series including a gap month, `percent_used` 0 when no budget, negative
+`remaining_minor`, and `{ "error": ... }` with no `detail` key on every failure path.
+
+**Auth plumbing.** `src/test/client-refresh.test.ts` (14 tests) covers the graded part: one
+refresh + one retry, never a loop; four concurrent 401s share ONE in-flight refresh promise
+(asserted as exactly 9 transport calls for 4 requests); a failed refresh clears the token and
+notifies; `credentials: "include"` on `/api/auth/*` and `same-origin` elsewhere; a 401 from
+`/api/auth/*` never auto-refreshes. Access token is in a module variable only — never storage.
+
+**Contract observations for the merger** (no amendments proposed; nothing was ambiguous enough
+to need one):
+- Contract 1 requires `WWW-Authenticate: Bearer` on protected 401s. Easy to omit server-side;
+  the mock sets it and the conformance suite asserts it.
+- `POST /api/auth/refresh` returns no `user`, so boot is refresh → `GET /api/auth/me`. Confirm
+  Instance 1 serves `/api/auth/me` with the Bearer token from a just-refreshed session.
+- Contract 6 does not fix the sentence for an out-of-range `limit` or `months`, or for an
+  invalid `date`/`note`. The mock invents readable sentences; only the *shape* is asserted, so
+  Instance 1's wording will not fail the suite.
+- `GET /api/categories` is fetched at runtime and compared against the compiled-in frozen copy;
+  a mismatch logs a console warning naming both. Contract-drift canary, deliberately loud.
+
+**ASSUMED (unchanged from the contract, flagged for the record):** current month is derived in
+UTC to match 5c's definition, while the expense-form date default is the user's local today;
+`limit=25` is used for the expenses page (contract allows 1..200, default 50).
+
+**Check-at-merge, as planned:** the real `Set-Cookie` refresh round-trip. A mock cannot set or
+read an httpOnly cookie, so rotation is modelled with a module variable. Boot-refresh,
+refresh-on-401, single-flight and rotation-after-logout are all tested against that model;
+the genuine cookie behaviour remains item ★4 for the Reconciler.
+
+**Environment notes.** (1) Vitest's default `forks` pool cannot start a worker under this
+OneDrive-synced path (times out waiting for the child); `pool: 'threads'` is pinned in
+`vite.config.ts` with the reason recorded there. (2) The dashboard is a lazily-imported chunk
+pulling in Recharts, so `testTimeout` is raised to 20s — the code is split for the sake of the
+bundle, not un-split for the sake of the runner. (3) Two boot-sequence tests asserted a
+transient state (the boot screen) and were intermittently racing the mock's own resolution —
+roughly 2 failures in 10 runs. Fixed by holding mock responses for a tick in those two tests so
+the window is real; 8 consecutive full-suite runs clean afterwards.
+
+**Not touched:** `backend/`, root `README.md`, `BUILT-WITH-SWARM.md`, `DEPLOY.md`, the
+INTERFACE CONTRACTS block, Instance 1's section.
 
 ---
 
