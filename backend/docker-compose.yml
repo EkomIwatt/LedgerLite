@@ -1,0 +1,54 @@
+# Local development stack: Postgres + the API.
+#
+#   docker compose up --build
+#   API   -> http://localhost:8000  (docs at /docs)
+#   DB    -> localhost:5432
+#
+# The frontend is NOT in here; it runs under Vite and proxies /api to :8000,
+# which is what makes local requests same-origin and lets the SameSite=Lax
+# development cookie work over plain http.
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: ledgerlite-db
+    environment:
+      POSTGRES_USER: ledgerlite
+      POSTGRES_PASSWORD: ledgerlite
+      POSTGRES_DB: ledgerlite
+    ports:
+      - "5432:5432"
+    volumes:
+      - ledgerlite_pgdata:/var/lib/postgresql/data
+      # Runs once, on first boot of an empty volume.
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ledgerlite -d ledgerlite"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    container_name: ledgerlite-api
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql+asyncpg://ledgerlite:ledgerlite@db:5432/ledgerlite
+      # Development value only. Production must supply a real one or the app
+      # refuses to boot -- see app/config.py.
+      SECRET_KEY: dev-only-insecure-secret-change-me
+      # Local dev is same-origin through the Vite proxy, so Lax + insecure works.
+      COOKIE_SECURE: "false"
+      COOKIE_SAMESITE: lax
+      FRONTEND_ORIGIN: http://localhost:5173
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+volumes:
+  ledgerlite_pgdata:
