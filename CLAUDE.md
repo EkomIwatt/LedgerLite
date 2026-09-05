@@ -386,7 +386,7 @@ CORS (backend):
 
 ---
 
-## INSTANCE 1 — Backend API & Auth  ·  STATUS: PENDING
+## INSTANCE 1 — Backend API & Auth  ·  STATUS: DONE
 
 **Owns:** `backend/` in full — `app/` (models, schemas, routers, auth, crud, analytics, errors,
 config, database), `tests/`, `db/init.sql`, `requirements.txt`, `pytest.ini`, `Dockerfile`,
@@ -479,7 +479,72 @@ configuration, and a `backend/README.md` covering local run + test commands.
 Follow the `swarm-worker` runtime protocol for all shared-file, escalation, and git rules.
 
 **Work log:**
-(instance writes only here)
+
+### 2026-09-04 — Instance 1 — backend complete, STATUS: DONE
+Branch `instance/backend`, three commits (`727d135`, `0b65ddc`, `44f6437`).
+**221 tests, all passing** (`cd backend && pytest`), run against the real ASGI app
+over in-memory SQLite.
+
+**Built** — `backend/app/`: `config` (env settings + production boot guards),
+`database` (async engine + hosted-Postgres URL normalization), `models`
+(users/expenses/budgets/refresh_tokens), `security` (argon2 + JWT), `deps`
+(`get_current_user`, query-param validation), `crud` (all data access), `analytics`
+(Contract 5 SQL), `categories`, `errors`, `months`, and five routers. Plus
+`tests/` (11 files), `db/init.sql`, `Dockerfile`, `docker-compose.yml`,
+`.env.example`, `pytest.ini`, `.python-version`, `backend/README.md`.
+
+**All six contracts produced as frozen.** No amendments proposed; nothing in the
+contract text turned out to be wrong or ambiguous in implementation.
+
+**Contract surfaces a merger should double-check:**
+1. **`POST /api/auth/refresh` is single-use.** Rotation is backed by a
+   `refresh_tokens` row per issued token, and replaying an already-rotated cookie
+   is treated as **theft**: the whole token family is revoked and `token_version`
+   bumped, which signs that user out everywhere. This is deliberate, and it
+   *depends* on Instance 2's single-flight refresh (Contract 1, frontend
+   obligations). If three concurrent 401s each fire their own refresh, two will
+   look like replays and log the user out. **This is the highest-value thing to
+   verify at merge** — it is the sharp edge of the ★ cookie round-trip check.
+2. **Logout kills access tokens too, not just refresh tokens.** `token_version` is
+   asserted as the `tv` claim on both token types. Stricter than Contract 1
+   requires, and compatible with it, but worth knowing: after logout an
+   already-issued access token 401s immediately rather than living out its 15 min.
+3. **`GET /api/health`** exists and is not in any contract — a platform
+   health-check target for Render/compose, excluded from the OpenAPI schema.
+   Additive only.
+4. **Query vs body error codes.** A malformed *query* param is 400, a bad *body*
+   is 422, per Contract 6. Both use the `{"error": ...}` envelope, so Instance 2's
+   error handling should not branch on status code to find the message.
+5. **Timestamps are second-precision** ISO-8601 UTC with a trailing `Z` — no
+   microseconds, on the wire or in the database.
+
+**Verified beyond the unit tests:** a live uvicorn + curl round-trip confirmed the
+real `Set-Cookie` carries `HttpOnly; Max-Age=2592000; Path=/api/auth; SameSite=lax`,
+that CORS echoes the exact origin with `allow-credentials: true`, and that
+cookie-only refresh (no body, no `Authorization` header) returns 200 and rotates.
+
+**Decisions taken as ASSUMED** (all low-stakes, none contradicting a contract):
+- Unknown category on a *query filter* → **400** `Unknown category 'foo'.`
+  (Contract 2 only specifies 422 for a *write*; Contract 6 makes a bad query param
+  a 400.)
+- `DELETE /api/budgets/{month}/{category}` with a malformed month or unknown
+  category → **404** with the contract's `No budget set for that category and month.`
+  rather than inventing a status the contract does not list for that endpoint.
+- An empty `?month=` on `GET /api/expenses` is treated as absent, not malformed.
+- `FRONTEND_ORIGIN` accepts a comma-separated list (each entry still an exact
+  origin, never a wildcard) so a Vercel preview origin can be added without a code
+  change.
+- Password capped at 128 chars; `note` stripped before the 500-char check.
+
+**Not verified locally — for the Reconciler:**
+- **The suite has never run against real Postgres.** Docker was unavailable in this
+  worktree. `tests/test_postgres_compat.py` compiles the models and the
+  month-bucketing SQL against the Postgres dialect (catching type, index and
+  `to_char` mistakes at compile time), but `docker compose up` + a live run is
+  still worth doing once at merge. The only genuinely Postgres-specific runtime
+  branch is `to_char(date, 'YYYY-MM')` in `analytics.monthly`.
+- The browser half of the ★ cookie check (a real `Set-Cookie` accepted by a real
+  browser across the Vercel→Render origin pair) remains as planned.
 
 ---
 
