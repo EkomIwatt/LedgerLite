@@ -1,9 +1,15 @@
 # LedgerLite
 
+### ▶ [ledger-lite-amber.vercel.app](https://ledger-lite-amber.vercel.app/)
+
 A private personal expense tracker. Log expenses, set a monthly budget per category,
 and see where the money went — a category pie chart, a month-over-month bar chart, and
 a budget-remaining gauge. Email/password accounts, so every row belongs to exactly one
 user and is invisible to everyone else.
+
+> Sign up with any email — no confirmation step, and the data is yours alone.
+> Hosted on free tiers, so the **first request after an idle spell takes 30–60s**
+> while the server and database wake. After that it's quick.
 
 Project 2 of 10 in an AI-accelerated full-stack ladder, and the second build of the
 **Swarm** multi-agent workflow — two agents working in parallel worktrees against six

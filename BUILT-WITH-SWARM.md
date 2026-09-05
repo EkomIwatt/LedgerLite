@@ -206,9 +206,23 @@ empty of the other user's data.
 Postgres was tested via `create_all` rather than `init.sql`, which exercises the
 **hosted-database path** — how Neon actually comes up.
 
-**Still open:** the browser half of the cookie check. Everything above was verified at
-the HTTP level; a real browser has not driven the round-trip. `DEPLOY.md` Phase 4 turns
-that into a seven-step manual smoke test.
+**Closed on the live deployment.** Everything above was verified at the HTTP level and
+in jsdom — neither of which is a browser engine — so the browser half of the cookie
+round-trip stayed open until deploy. It has since been walked end to end against the
+live stack (`DEPLOY.md` Phase 5), all green:
+
+- the real `Set-Cookie` arrives cross-origin with `HttpOnly`, `Secure`, `SameSite=None`,
+  `Path=/api/auth`;
+- a page reload silently re-authenticates — the access token is memory-only, so this is
+  only possible via the cookie;
+- an expired token produces exactly one refresh and one retry;
+- **two tabs stay signed in** — Amendment 1 holding in a real browser, the sequence that
+  signed the user out on every device before the fix;
+- a second account sees no trace of the first, through the whole stack.
+
+Nothing about this run is now unverified.
+
+**Live:** <https://ledger-lite-amber.vercel.app/>
 
 ## 7. Also fixed during reconciliation
 
