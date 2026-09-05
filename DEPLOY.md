@@ -1,39 +1,54 @@
 # Deploying LedgerLite (free, permanent, public)
 
-A portfolio-ready deploy on free tiers — the same three-layer split as Snipp, plus
-the parts an authenticated app needs that a stateless one doesn't.
+A portfolio-ready deploy on free tiers — the same three-layer split as Snipp, plus the
+parts an authenticated app needs that a stateless one doesn't.
 
 ```
   Browser ──> <app>.vercel.app           React/Vite app   (Vercel, free)
                   │
                   │  fetch /api/*   cross-origin → CORS + credentials
-                  │  Authorization: Bearer <access token>   (in memory)
+                  │  Authorization: Bearer <access token>   (in memory, 15 min)
                   │  Cookie: refresh_token                  (httpOnly, /api/auth only)
                   ▼
             <api>.onrender.com            FastAPI service  (Render, free)
-                  │
+                  │  asyncpg over TLS
                   ▼
             Neon Postgres                 managed database (Neon,   free)
 ```
 
-> **Cold starts:** Render's free web service sleeps after ~15 min idle. The first
-> request after a nap takes ~30–60s to wake. On LedgerLite that shows up as a slow
-> first sign-in, because the boot refresh is the very first call the app makes.
+**Time:** ~30 minutes the first time. **Cost:** nothing, no card.
 
-Pick both names up front so CORS and the cookie agree from the start. This guide uses:
+---
 
-- Render service `ledgerlite-api` → `https://ledgerlite-api.onrender.com`
-- Vercel project `ledgerlite` → `https://ledgerlite.vercel.app`
+## Phase 0 — Before you start
 
-Substitute your own and keep them consistent everywhere below.
+**You need:**
+
+- The repo on GitHub — <https://github.com/EkomIwatt/LedgerLite> ✔
+- Accounts on [Neon](https://neon.tech), [Render](https://dashboard.render.com),
+  [Vercel](https://vercel.com). All three sign in with GitHub; none needs a card.
+
+**Pick both names now** so CORS and the cookie agree from the start. This guide uses:
+
+| | Name | URL |
+|---|---|---|
+| Render service | `ledgerlite-api` | `https://ledgerlite-api.onrender.com` |
+| Vercel project | `ledgerlite` | `https://ledgerlite.vercel.app` |
+
+Substitute your own and keep them consistent. **Expect the Vercel URL to differ from
+your guess** — Vercel often appends a suffix when a name is taken (Snipp's came out
+`snipp-kappa.vercel.app`). Phase 4 exists to fix that up; don't try to predict it.
+
+**Deployment order is forced:** Neon → Render → Vercel → back to Render. Each step needs
+the previous one's URL, and the last one closes the loop.
 
 ---
 
 ## What's different from Snipp — read this first
 
-Snipp had no auth, so its only cross-origin concern was CORS. LedgerLite adds a
-refresh cookie that must survive a **cross-origin** hop, and that pulls in three
-settings that must be right *together* or sign-in silently fails to persist:
+Snipp had no auth, so its only cross-origin concern was CORS. LedgerLite adds a refresh
+cookie that must survive a **cross-origin** hop, and that pulls in three settings that
+must be right *together* or sign-in silently fails to persist:
 
 | Setting | Local | Production | Why |
 |---|---|---|---|
@@ -43,76 +58,155 @@ settings that must be right *together* or sign-in silently fails to persist:
 
 Locally the Vite proxy makes everything same-origin, so `Lax` + insecure works over
 plain http. In production nothing proxies, so the cookie is genuinely cross-site.
-**The app refuses to boot in production with `SameSite=None` and `Secure=false`** —
-that guard exists because the failure is otherwise silent and looks like "sign-in
-just doesn't stick."
+
+The failure mode is nasty because it isn't an error: sign-in appears to work, then a
+reload signs you out. **The app refuses to boot in production with `SameSite=None` and
+`Secure=false`** precisely so this is caught loudly at deploy rather than quietly by a
+confused user.
 
 ---
 
 ## Phase 1 — Neon (managed Postgres)
 
-1. Sign up at <https://neon.tech> (no card) and create a project.
-2. Copy the **connection string**:
+1. <https://neon.tech> → sign in with GitHub → **New Project**.
+2. Name it `ledgerlite`. **Pick the region closest to your Render region** — every API
+   request makes at least one round trip, and a transatlantic hop shows up directly in
+   response times. (Render's free tier is Oregon or Frankfurt; pair accordingly.)
+3. Copy the **connection string** from the dashboard. It looks like:
    ```
-   postgresql://user:pass@ep-xxx.region.aws.neon.tech/dbname?sslmode=require&channel_binding=require
+   postgresql://user:pass@ep-cool-name-123456.eu-central-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require
    ```
-   Paste it verbatim. `backend/app/database.py` normalizes it for the async driver —
-   forces `+asyncpg`, enables SSL, and strips the libpq-only query args
-   (`sslmode`, `channel_binding`) that asyncpg rejects outright.
 
-No schema step is needed. The app runs `create_all` on startup, which is idempotent,
-so a fresh Neon database provisions `users` / `expenses` / `budgets` /
-`refresh_tokens` on first boot. (`backend/db/init.sql` exists for local
-docker-compose; a hosted database never sees it. Both paths are verified.)
+### ⚠ Use the DIRECT connection string, not the pooled one
+
+Neon offers two endpoints. The pooled one has **`-pooler`** in the hostname:
+
+```
+ep-cool-name-123456-pooler.eu-central-1.aws.neon.tech    ← DO NOT USE
+ep-cool-name-123456.eu-central-1.aws.neon.tech           ← use this one
+```
+
+The pooled endpoint runs PgBouncer in transaction mode, which is incompatible with
+asyncpg's prepared-statement cache. `backend/app/database.py` does not set
+`statement_cache_size=0`, so the pooled endpoint will fail at runtime with:
+
+```
+asyncpg.exceptions.DuplicatePreparedStatementError:
+  prepared statement "__asyncpg_stmt_1__" already exists
+```
+
+Confusingly this often works for the first few requests and then starts failing, which
+makes it look intermittent. It isn't — it's the wrong endpoint. The app's own pool
+(`pool_size=5, max_overflow=10, pool_pre_ping=True, pool_recycle=1800`) is sized for
+the direct endpoint and is all this app needs.
+
+> **Paste the string verbatim** — including `?sslmode=require&channel_binding=require`.
+> `database.py` normalizes it: rewrites `postgres://` → `postgresql://` →
+> `postgresql+asyncpg://`, lifts `sslmode` into a real TLS setting, and strips the
+> libpq-only query args (`sslmode`, `channel_binding`) that asyncpg rejects outright.
+> A hosted host with no `sslmode` at all still gets TLS forced on.
+
+**No schema step.** The app runs `create_all` on startup — idempotent — so a fresh Neon
+database provisions `users`, `expenses`, `budgets` and `refresh_tokens` on first boot.
+(`backend/db/init.sql` exists for local docker-compose; a hosted database never sees it.
+Both paths are verified.)
+
+> **Free-tier note:** the Neon compute suspends after ~5 minutes idle and wakes on the
+> next connection. `pool_pre_ping=True` is already set, so a stale pooled connection is
+> detected and replaced rather than surfacing as an error.
+
+---
 
 ## Phase 2 — Render (FastAPI backend)
 
-1. <https://dashboard.render.com> → **New** → **Web Service** → connect this repo.
+1. <https://dashboard.render.com> → **New** → **Web Service** → connect the
+   `EkomIwatt/LedgerLite` repo.
 2. Settings:
-   - **Root Directory:** `backend`
-   - **Runtime:** Python 3 (or let Render use the Dockerfile — it honours `$PORT`)
-   - **Build Command:** `pip install -r requirements.txt`
-   - **Start Command:** `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-   - **Instance Type:** Free
+
+   | Field | Value |
+   |---|---|
+   | **Name** | `ledgerlite-api` |
+   | **Root Directory** | `backend` |
+   | **Runtime** | Python 3 |
+   | **Build Command** | `pip install -r requirements.txt` |
+   | **Start Command** | `uvicorn app.main:app --host 0.0.0.0 --port $PORT` |
+   | **Instance Type** | Free |
+
+   **Root Directory `backend` matters** for more than paths: it's how Render finds
+   `backend/.python-version`, which pins **3.12.8**. That pin is Snipp's scar tissue —
+   Render otherwise picks a Python with no prebuilt `pydantic-core` wheel and the source
+   build dies on a read-only filesystem.
+
+   *Alternative:* set Runtime to **Docker** and Render uses `backend/Dockerfile`, which
+   already honours `$PORT` and pins the same Python. Slower to build, more faithful to
+   local. Either is fine; native Python is quicker.
+
 3. **Generate a real secret** — do not reuse the placeholder:
    ```bash
    python -c "import secrets; print(secrets.token_urlsafe(48))"
    ```
+   Keep it somewhere safe. Changing it later invalidates every issued token, signing
+   all users out.
+
 4. **Environment** → add:
 
-   | Key | Value |
-   |---|---|
-   | `ENVIRONMENT` | `production` |
-   | `DATABASE_URL` | *(the Neon string from Phase 1)* |
-   | `SECRET_KEY` | *(the generated value — never the placeholder)* |
-   | `COOKIE_SECURE` | `true` |
-   | `COOKIE_SAMESITE` | `none` |
-   | `FRONTEND_ORIGIN` | `https://ledgerlite.vercel.app` |
+   | Key | Value | Notes |
+   |---|---|---|
+   | `ENVIRONMENT` | `production` | turns on the boot guards |
+   | `DATABASE_URL` | *(Neon direct string, Phase 1)* | verbatim, `-pooler`-free |
+   | `SECRET_KEY` | *(generated above)* | ≥32 chars, never the placeholder |
+   | `COOKIE_SECURE` | `true` | |
+   | `COOKIE_SAMESITE` | `none` | moves together with the line above |
+   | `FRONTEND_ORIGIN` | `https://ledgerlite.vercel.app` | **provisional** — corrected in Phase 4 |
 
    Optional, all with working defaults: `ACCESS_TOKEN_TTL_SECONDS` (900),
    `REFRESH_TOKEN_TTL_SECONDS` (2592000), `REFRESH_REPLAY_GRACE_SECONDS` (10),
    `SQL_ECHO` (false).
 
-   `FRONTEND_ORIGIN` accepts a **comma-separated list**, so to also allow Vercel
-   preview deployments:
-   `https://ledgerlite.vercel.app,https://ledgerlite-git-main-<you>.vercel.app`
+5. **Create Web Service.** First build takes a few minutes.
 
-5. Create the service. Verify: `https://ledgerlite-api.onrender.com/api/health`
-   → `{"status":"ok"}`.
+6. **Verify:**
+   ```bash
+   curl https://ledgerlite-api.onrender.com/api/health
+   # {"status":"ok"}
+   ```
+   Then check the startup log for the readiness line, which echoes the config back:
+   ```
+   LedgerLite API ready (env=production, origins=['https://...'], cookie secure=True samesite=none)
+   ```
+   If those values aren't what you intended, fix them now — this line is the cheapest
+   confirmation you'll get.
 
-> With `ENVIRONMENT=production` the app **refuses to start** if `SECRET_KEY` is
-> missing, still the placeholder, or under 32 characters — and if
-> `COOKIE_SAMESITE=none` is set without `COOKIE_SECURE=true`. A boot failure here is
-> the guard doing its job; read the log line, fix the variable, redeploy.
+### If it refuses to boot, read the message
+
+Both guards fail loudly and specifically. This is them working, not breaking:
+
+| Log says | Fix |
+|---|---|
+| `SECRET_KEY must be set to a strong, non-default value (>= 32 chars)` | You left the placeholder or used something short. Generate one (step 3). |
+| `COOKIE_SAMESITE=None requires COOKIE_SECURE=true` | Set `COOKIE_SECURE=true`. |
+| `FRONTEND_ORIGIN must be an exact origin; a wildcard is invalid` | Remove the `*`; a wildcard cannot be used with credentialed CORS. |
+
+---
 
 ## Phase 3 — Vercel (React/Vite frontend)
 
-1. <https://vercel.com> → **Add New** → **Project** → import this repo.
+1. <https://vercel.com> → **Add New** → **Project** → import `EkomIwatt/LedgerLite`.
 2. Settings:
-   - **Root Directory:** `frontend`
-   - Framework preset **Vite** is auto-detected (Build `npm run build`, Output `dist`).
-     `frontend/vercel.json` supplies the SPA rewrite so a deep link like
-     `/expenses` doesn't 404 on refresh.
+
+   | Field | Value |
+   |---|---|
+   | **Root Directory** | `frontend` |
+   | **Framework Preset** | Vite (auto-detected) |
+   | **Build Command** | `npm run build` (default) |
+   | **Output Directory** | `dist` (default) |
+
+   `frontend/vercel.json` supplies the SPA rewrite, so a deep link like `/expenses`
+   doesn't 404 on refresh. Nothing to configure for that.
+
+   Note `npm run build` runs `tsc --noEmit && vite build` — a type error fails the
+   deploy rather than shipping. That's deliberate.
+
 3. **Environment Variables** → add:
 
    | Key | Value |
@@ -120,60 +214,179 @@ docker-compose; a hosted database never sees it. Both paths are verified.)
    | `VITE_API_BASE_URL` | `https://ledgerlite-api.onrender.com` |
    | `VITE_USE_MOCKS` | `false` |
 
-   `VITE_USE_MOCKS=true` serves the whole app from the in-browser mock backend with
-   no API at all — useful for a demo link, but it is not the real thing.
+   No trailing slash on the API URL. These are baked in at **build** time, not read at
+   runtime — changing either requires a redeploy, not just a restart.
 
-4. Deploy, then **go back and confirm the real Vercel URL.** Vercel often appends a
-   suffix (Snipp's was `snipp-kappa.vercel.app`, not the bare project name). If it
-   differs from what you put in Render's `FRONTEND_ORIGIN`, fix it there and
-   redeploy — an env change triggers a rebuild.
+   > `VITE_USE_MOCKS=true` serves the entire app from the in-browser mock backend with
+   > no API at all, seeded with `demo@ledgerlite.app` / `demo1234`. Useful for a demo
+   > link that survives Render's cold starts — but it is not the real thing, and nothing
+   > persists. Don't ship it as the main deployment.
 
-## Phase 4 — Smoke test the live deployment
+4. **Deploy**, then **copy the actual URL Vercel gives you.**
 
-Order matters: each step depends on the previous one actually having worked.
+---
 
-1. **Sign up** with a fresh email. You should land on the dashboard.
-2. **Open DevTools → Application → Cookies** on the API origin. There should be a
-   `refresh_token` cookie marked **HttpOnly**, **Secure**, **SameSite=None**, with
-   `Path=/api/auth`. If it's missing, CORS or the cookie flags are wrong — see
-   Troubleshooting.
-3. **Reload the page.** You should stay signed in. This is the boot refresh working:
-   the access token lives only in memory, so surviving a reload proves the cookie
-   round-trip end to end.
-4. **Add an expense**, set a **budget** for that category, and confirm the pie, bar
-   and gauge all render.
-5. **Wait out the access token** (15 min) or force a 401, then click around. Exactly
-   one refresh should fire in the Network tab, and your request should succeed.
-6. **Open a second tab** and use both. You should stay signed in in both — that is
-   the cross-tab refresh fix (Amendment 1) holding.
-7. **Sign up a second account** in a private window and confirm it sees none of the
-   first account's expenses, budgets, or charts.
+## Phase 4 — Close the CORS loop ← the step people skip
+
+Vercel has now told you the real origin. If it differs at all from the provisional value
+in Render's `FRONTEND_ORIGIN` — different suffix, extra hyphen, anything — fix it:
+
+1. Render → your service → **Environment** → edit `FRONTEND_ORIGIN` to the exact live
+   Vercel origin. No trailing slash, no path, no wildcard.
+2. Save. Render redeploys automatically on an env change.
+3. Re-check the readiness log line shows the corrected origin.
+
+**To also allow Vercel preview deployments**, comma-separate them:
+
+```
+https://ledgerlite.vercel.app,https://ledgerlite-git-main-ekomiwatt.vercel.app
+```
+
+Every entry must still be an exact origin. The symptom of getting this wrong is a
+misleading "can't reach the API" in the UI, with a blocked cross-origin request in the
+browser console — it looks like the backend is down when it's actually refusing the
+origin.
+
+---
+
+## Phase 5 — Smoke test the live deployment
+
+Order matters: each step depends on the previous one having genuinely worked. **This is
+also where the browser half of the cookie round-trip finally gets proven** — everything
+before this was verified over HTTP and in jsdom, neither of which is a browser engine.
+
+**1. Sign up** with a fresh email. You should land on the dashboard.
+> First request may take 30–60s while Render wakes. Subsequent ones are fast.
+
+**2. Inspect the cookie.** DevTools → **Application** → **Cookies** → the *API* origin
+(`https://ledgerlite-api.onrender.com`, not the Vercel one). You should see:
+
+| Attribute | Expected |
+|---|---|
+| Name | `refresh_token` |
+| HttpOnly | ✔ |
+| Secure | ✔ |
+| SameSite | `None` |
+| Path | `/api/auth` |
+| Expires | ~30 days out |
+
+*Proves:* the cookie survived a cross-site hop with credentials. If it's absent, CORS or
+the cookie flags are wrong — go to Troubleshooting.
+
+**3. Reload the page.** You should stay signed in.
+*Proves:* the boot refresh works end to end. The access token lives **only in memory**,
+so surviving a reload is only possible by exchanging the cookie for a new one. This is
+the single most valuable check on the page.
+
+**4. Use the app.** Add a few expenses across two or three categories, set a budget for
+one of them, and confirm all three charts render — pie, month-over-month bar, and the
+gauge. Then set a budget *smaller* than what you've spent and confirm the gauge shows a
+real over-budget state rather than a clamped one.
+
+**5. Let the access token expire** (15 minutes) then click around. In the **Network**
+tab you should see exactly **one** `POST /api/auth/refresh`, followed by your original
+request retried and succeeding.
+*Proves:* refresh-on-401 with single-flight — one refresh, one retry, no loop.
+
+**6. Open a second tab** and use the app in both. Both stay signed in.
+*Proves:* Amendment 1 — the cross-tab refresh fix. Under the pre-amendment code this
+exact sequence signed you out on every device. If this fails, check
+`REFRESH_REPLAY_GRACE_SECONDS` is not set to `0`.
+
+**7. Sign up a second account** in a private window. Add an expense there. Confirm
+neither account sees any trace of the other — list, dashboard totals, or charts.
+*Proves:* user isolation through the whole stack, not just at the API.
+
+**8. Sign out**, then press Back. You should not get back in.
+*Proves:* logout invalidates the family; the access token dies immediately rather than
+living out its 15 minutes.
+
+---
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Sign-in works but a reload signs you out | The refresh cookie isn't being stored | Check `COOKIE_SECURE=true` **and** `COOKIE_SAMESITE=none` on Render; both, or neither works |
-| "Can't reach the API" / console CORS error | `FRONTEND_ORIGIN` ≠ the actual Vercel origin | Copy the exact live URL (no trailing slash) into Render and redeploy |
-| Service won't boot, log mentions `SECRET_KEY` | Placeholder or short secret in production | Generate a real one (Phase 2 step 3) |
-| Service won't boot, log mentions SameSite | `none` without `Secure` | Set `COOKIE_SECURE=true` |
-| First request after idle takes ~40s | Render free-tier cold start | Expected; not a bug |
-| Signed out unexpectedly with two tabs open | `REFRESH_REPLAY_GRACE_SECONDS=0` | Restore the default of `10` |
-| Charts empty for a brand-new account | Correct behaviour | Add an expense; every analytics endpoint returns zeroed totals, never an error |
+| Sign-in works, reload signs you out | Refresh cookie not stored | `COOKIE_SECURE=true` **and** `COOKIE_SAMESITE=none` on Render — both, or neither works |
+| No `refresh_token` cookie in DevTools | CORS rejected the credentialed response | `FRONTEND_ORIGIN` must equal the live Vercel origin exactly (Phase 4) |
+| "Can't reach the API", console shows blocked origin | Same as above | Same as above — the backend is up, it's refusing the origin |
+| `DuplicatePreparedStatementError` / `__asyncpg_stmt_N__ already exists` | Using Neon's **pooled** endpoint | Switch `DATABASE_URL` to the direct one (no `-pooler`) — Phase 1 |
+| Boot fails, log mentions `SECRET_KEY` | Placeholder or <32 chars in production | Generate a real one |
+| Boot fails, log mentions SameSite | `none` without `Secure` | `COOKIE_SECURE=true` |
+| Build fails on `pydantic-core` | Wrong Python | Confirm Root Directory is `backend` so `.python-version` (3.12.8) is found |
+| First request after idle takes ~40s | Render free-tier cold start | Expected, not a bug |
+| Signed out with two tabs open | `REFRESH_REPLAY_GRACE_SECONDS=0` | Restore the default `10` |
+| Charts empty on a new account | Correct behaviour | Add an expense — analytics return zeroed totals, never an error |
+| Deep link 404s on refresh | SPA rewrite missing | Confirm Root Directory is `frontend` so `vercel.json` is picked up |
+| Type error fails the Vercel build | `npm run build` typechecks first | Fix it — this is the guard working |
+
+---
+
+## Appendix A — Environment variable reference
+
+**Render (backend)**
+
+| Key | Default | Production |
+|---|---|---|
+| `ENVIRONMENT` | `development` | `production` |
+| `DATABASE_URL` | local compose URL | Neon **direct** string |
+| `SECRET_KEY` | dev placeholder | generated, ≥32 chars |
+| `COOKIE_SECURE` | `false` | `true` |
+| `COOKIE_SAMESITE` | `lax` | `none` |
+| `COOKIE_DOMAIN` | unset | leave unset |
+| `FRONTEND_ORIGIN` | `http://localhost:5173` | exact Vercel origin(s) |
+| `ACCESS_TOKEN_TTL_SECONDS` | `900` | |
+| `REFRESH_TOKEN_TTL_SECONDS` | `2592000` | |
+| `REFRESH_REPLAY_GRACE_SECONDS` | `10` | |
+| `SQL_ECHO` | `false` | keep `false` — it logs every statement |
+
+**Vercel (frontend)**
+
+| Key | Local | Production |
+|---|---|---|
+| `VITE_API_BASE_URL` | *(empty — use the proxy)* | Render URL, no trailing slash |
+| `VITE_USE_MOCKS` | `false` | `false` |
+
+Full annotated versions: `backend/.env.example`, `frontend/.env.example`.
+
+## Appendix B — Operating it
+
+**Redeploy:** push to `main`. Both platforms auto-deploy. A Render env change also
+triggers a rebuild; a Vercel env change needs a manual redeploy, since Vite bakes
+`VITE_*` in at build time.
+
+**Rotate `SECRET_KEY`:** change it on Render and redeploy. Every access and refresh
+token instantly becomes invalid and every user is signed out — correct behaviour, and
+the right response if you suspect the key leaked.
+
+**Wipe all sessions without touching the key:** not exposed as an endpoint. Delete the
+`refresh_tokens` rows in Neon; users get signed out as their access tokens expire.
+
+**Cold starts:** Render's free web service sleeps after ~15 min idle; Neon's compute
+suspends after ~5. On LedgerLite the wake shows up as a slow first sign-in, because the
+boot refresh is the very first call the app makes. If you're demoing it live, load the
+page a minute beforehand.
+
+**Logs:** Render → your service → **Logs**. Unhandled errors are logged server-side with
+a stack trace; the client only ever receives `{"error": "Something went wrong."}`.
+
+---
 
 ## Local development is unchanged
 
-Local still uses the Vite dev proxy (no CORS, no cross-site cookie) and git-ignored
-`.env` files in `backend/` and `frontend/`. Hosted config lives entirely in the
-Render and Vercel dashboards.
+Local uses the Vite dev proxy — no CORS, no cross-site cookie — and git-ignored `.env`
+files. Hosted config lives entirely in the Render and Vercel dashboards.
 
 ```bash
 # Backend + Postgres
-cd backend && docker compose up --build      # API on :8000, Postgres on :5432
+cd backend
+cp .env.example .env          # set a real SECRET_KEY
+docker compose up --build     # API on :8000, Postgres on :5432
 
 # Frontend
-cd frontend && cp .env.example .env.local    # leave VITE_API_BASE_URL empty
-npm install && npm run dev                   # UI on :5173, /api proxied to :8000
+cd frontend
+cp .env.example .env.local    # leave VITE_API_BASE_URL empty
+npm install && npm run dev    # UI on :5173, /api proxied to :8000
 ```
 
-See `backend/README.md` and `frontend/README.md` for the per-side detail.
+See `backend/README.md` and `frontend/README.md` for per-side detail.
