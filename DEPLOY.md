@@ -241,6 +241,20 @@ Both guards fail loudly and specifically. This is them working, not breaking:
    No trailing slash on the API URL. These are baked in at **build** time, not read at
    runtime — changing either requires a redeploy, not just a restart.
 
+   **Mark both as Config / plaintext, not Secret.** Vercel will warn you that the
+   `VITE_` prefix exposes the value to the browser, and it is right: Vite inlines every
+   `VITE_`-prefixed variable into the JavaScript bundle at build time, where anyone can
+   read it in DevTools. Marking it Secret does not hide it — it ships in the bundle
+   either way, and only *looks* protected in the dashboard, which is worse than
+   plaintext. Both of these are meant to be public: an API address the browser has to
+   know, and a feature flag.
+
+   The corollary: **never put a real secret behind a `VITE_` prefix.** This app never
+   asks you to. `SECRET_KEY` lives only on Render and never crosses the wire, the
+   refresh token is httpOnly so JavaScript cannot read it, and the access token is
+   in-memory and expires in 15 minutes. Nothing the frontend holds is worth stealing
+   at rest.
+
    > `VITE_USE_MOCKS=true` serves the entire app from the in-browser mock backend with
    > no API at all, seeded with `demo@ledgerlite.app` / `demo1234`. Useful for a demo
    > link that survives Render's cold starts — but it is not the real thing, and nothing
