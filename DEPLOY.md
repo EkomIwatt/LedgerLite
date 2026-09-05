@@ -32,12 +32,36 @@ parts an authenticated app needs that a stateless one doesn't.
 
 | | Name | URL |
 |---|---|---|
-| Render service | `ledgerlite-api` | `https://ledgerlite-api.onrender.com` |
-| Vercel project | `ledgerlite` | `https://ledgerlite.vercel.app` |
+| Render service | `ledgerlite-api` | `https://<your-render-url>.onrender.com` |
+| Vercel project | `ledgerlite` | `https://<your-vercel-url>.vercel.app` |
 
-Substitute your own and keep them consistent. **Expect the Vercel URL to differ from
-your guess** — Vercel often appends a suffix when a name is taken (Snipp's came out
-`snipp-kappa.vercel.app`). Phase 4 exists to fix that up; don't try to predict it.
+### ⚠ Never assume a URL — copy both from the dashboard
+
+**Both platforms rename you when a name is already taken**, and the names in this guide
+*are* taken. Real examples from this project's own deploy:
+
+| You ask for | You actually get |
+|---|---|
+| `ledgerlite` (Vercel) | `ledger-lite-amber.vercel.app` |
+| `snipp` (Vercel, project 1) | `snipp-kappa.vercel.app` |
+
+Render is worse than a rename: `ledgerlite-api.onrender.com` is **an unrelated
+stranger's Express service**. Point `VITE_API_BASE_URL` at a hostname you assumed rather
+than copied, and your frontend talks to someone else's server. The symptom is a
+confusing CORS error blaming a wildcard your app cannot even emit:
+
+```
+The value of the 'Access-Control-Allow-Origin' header in the response must not be
+the wildcard '*' when the request's credentials mode is 'include'
+```
+
+That message means *the thing answering is not this app* — `config.py` refuses to boot
+with a wildcard origin, so it can never produce that response. Check
+`https://<host>/api/health`: `{"status":"ok"}` is yours, a 404 is not.
+
+**So: deploy each service, then copy its real URL out of the dashboard before wiring
+anything to it.** Every `<your-render-url>` / `<your-vercel-url>` below is a placeholder
+for a value you paste in, never one you predict.
 
 **Deployment order is forced:** Neon → Render → Vercel → back to Render. Each step needs
 the previous one's URL, and the last one closes the loop.
@@ -157,7 +181,7 @@ Both paths are verified.)
    | `SECRET_KEY` | *(generated above)* | ≥32 chars, never the placeholder |
    | `COOKIE_SECURE` | `true` | |
    | `COOKIE_SAMESITE` | `none` | moves together with the line above |
-   | `FRONTEND_ORIGIN` | `https://ledgerlite.vercel.app` | **provisional** — corrected in Phase 4 |
+   | `FRONTEND_ORIGIN` | `https://<your-vercel-url>.vercel.app` | **provisional** — corrected in Phase 4 |
 
    Optional, all with working defaults: `ACCESS_TOKEN_TTL_SECONDS` (900),
    `REFRESH_TOKEN_TTL_SECONDS` (2592000), `REFRESH_REPLAY_GRACE_SECONDS` (10),
@@ -167,7 +191,7 @@ Both paths are verified.)
 
 6. **Verify:**
    ```bash
-   curl https://ledgerlite-api.onrender.com/api/health
+   curl https://<your-render-url>.onrender.com/api/health
    # {"status":"ok"}
    ```
    Then check the startup log for the readiness line, which echoes the config back:
@@ -211,7 +235,7 @@ Both guards fail loudly and specifically. This is them working, not breaking:
 
    | Key | Value |
    |---|---|
-   | `VITE_API_BASE_URL` | `https://ledgerlite-api.onrender.com` |
+   | `VITE_API_BASE_URL` | `https://<your-render-url>.onrender.com` |
    | `VITE_USE_MOCKS` | `false` |
 
    No trailing slash on the API URL. These are baked in at **build** time, not read at
@@ -239,7 +263,7 @@ in Render's `FRONTEND_ORIGIN` — different suffix, extra hyphen, anything — f
 **To also allow Vercel preview deployments**, comma-separate them:
 
 ```
-https://ledgerlite.vercel.app,https://ledgerlite-git-main-ekomiwatt.vercel.app
+https://<your-vercel-url>.vercel.app,https://ledgerlite-git-main-ekomiwatt.vercel.app
 ```
 
 Every entry must still be an exact origin. The symptom of getting this wrong is a
@@ -259,7 +283,7 @@ before this was verified over HTTP and in jsdom, neither of which is a browser e
 > First request may take 30–60s while Render wakes. Subsequent ones are fast.
 
 **2. Inspect the cookie.** DevTools → **Application** → **Cookies** → the *API* origin
-(`https://ledgerlite-api.onrender.com`, not the Vercel one). You should see:
+(`https://<your-render-url>.onrender.com`, not the Vercel one). You should see:
 
 | Attribute | Expected |
 |---|---|
