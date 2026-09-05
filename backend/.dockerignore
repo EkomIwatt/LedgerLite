@@ -1,0 +1,44 @@
+# Keep the build context — and therefore `COPY . .` — to source only.
+#
+# Without this file a local virtualenv is copied straight into the image: a
+# .venv/ created for running the suite on the host added 71MB of the 72MB of
+# /app, and it would shadow nothing useful since dependencies are installed
+# from requirements.txt at build time.
+
+# Local virtualenvs
+.venv/
+venv/
+env/
+
+# Python build/test artefacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Secrets must never enter an image layer (.env.example is kept deliberately)
+.env
+.env.*
+!.env.example
+
+# Local database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Docker's own files — never needed inside the image
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# VCS / editor / OS
+.git/
+.gitignore
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

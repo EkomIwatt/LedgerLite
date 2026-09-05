@@ -271,3 +271,93 @@ describe('Contract 6 error handling', () => {
     await expect(apiVoid('/api/expenses/1', { method: 'DELETE' })).resolves.toBeUndefined();
   });
 });
+
+/**
+ * Cross-tab serialisation.
+ *
+ * The in-tab single-flight above is a module variable, so it is per JavaScript
+ * realm - per TAB. Two tabs share one cookie jar but not one promise, so both
+ * could post the same refresh cookie at once and the backend would read the
+ * loser as a replayed token. A Web Lock serialises them: the loser runs only
+ * after the winner's Set-Cookie has landed in the shared jar, so it sends the
+ * current cookie and rotates normally.
+ */
+describe('cross-tab refresh lock', () => {
+  const originalLocks = Object.getOwnPropertyDescriptor(navigator, 'locks');
+
+  function installLocks(impl: unknown) {
+    Object.defineProperty(navigator, 'locks', {
+      value: impl,
+      configurable: true,
+      writable: true,
+    });
+  }
+
+  afterEach(() => {
+    if (originalLocks) Object.defineProperty(navigator, 'locks', originalLocks);
+    else delete (navigator as { locks?: unknown }).locks;
+  });
+
+  it('runs the refresh inside a named Web Lock when the API is available', async () => {
+    const order: string[] = [];
+    installLocks({
+      request: async (name: string, fn: () => Promise<unknown>) => {
+        order.push(`acquire:${name}`);
+        const result = await fn();
+        order.push('release');
+        return result;
+      },
+    });
+    install(async () => json(200, { access_token: 'fresh', token_type: 'bearer', expires_in: 900 }));
+
+    await expect(refreshSession()).resolves.toBe('fresh');
+
+    // The network call happened strictly between acquire and release.
+    expect(order).toEqual(['acquire:ledgerlite-refresh', 'release']);
+    expect(refreshCalls()).toBe(1);
+  });
+
+  it('serialises two refreshes that would otherwise replay the same cookie', async () => {
+    // One lock, honoured properly: the second caller waits for the first.
+    let chain: Promise<unknown> = Promise.resolve();
+    installLocks({
+      request: (_name: string, fn: () => Promise<unknown>) => {
+        const next = chain.then(fn);
+        chain = next.catch(() => undefined);
+        return next;
+      },
+    });
+
+    // The "cookie jar": each refresh consumes the current cookie and issues the
+    // next. A request arriving with a consumed cookie is a replay - exactly
+    // what the backend treats as theft.
+    let jar = 'C1';
+    const seen: string[] = [];
+    install(async () => {
+      seen.push(jar);
+      if (jar === 'consumed') return json(401, { error: 'Session expired. Please sign in again.' });
+      jar = 'consumed';
+      await tick();
+      jar = 'C2';
+      return json(200, { access_token: 'fresh', token_type: 'bearer', expires_in: 900 });
+    });
+
+    // Two independent tabs: separate in-flight state, one shared lock.
+    const tabA = refreshSession();
+    resetRefreshState();
+    const tabB = refreshSession();
+
+    await expect(tabA).resolves.toBe('fresh');
+    await expect(tabB).resolves.toBe('fresh');
+    // Neither request ever saw a consumed cookie.
+    expect(seen).toEqual(['C1', 'C2']);
+  });
+
+  it('still refreshes where Web Locks are unavailable (Safari < 15.4, jsdom)', async () => {
+    delete (navigator as { locks?: unknown }).locks;
+    install(async () => json(200, { access_token: 'fresh', token_type: 'bearer', expires_in: 900 }));
+
+    await expect(refreshSession()).resolves.toBe('fresh');
+    expect(refreshCalls()).toBe(1);
+  });
+});

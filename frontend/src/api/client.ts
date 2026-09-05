@@ -157,6 +157,30 @@ async function send(path: string, options: RequestOptions): Promise<Response> {
 
 let inFlightRefresh: Promise<string | null> | null = null;
 
+/** Web Locks name. Scoped per origin, which is exactly the cookie's scope. */
+const REFRESH_LOCK = 'ledgerlite-refresh';
+
+/**
+ * Serialise refreshes across every tab of this origin.
+ *
+ * `inFlightRefresh` below is a module variable, so it is single-flight per
+ * JavaScript realm - per TAB. Two tabs share one cookie jar but not one
+ * promise, so both can post the same refresh cookie at once; the backend
+ * rotates on the first and reads the second as a replayed token. A lock fixes
+ * this without any cross-tab messaging: by the time the second tab runs, the
+ * first tab's `Set-Cookie` has already landed in the shared jar, so it sends
+ * the CURRENT cookie and rotates normally.
+ *
+ * Falls through uncontended where the API is absent (Safari < 15.4, jsdom,
+ * non-secure contexts). The backend's replay grace window is the safety net
+ * there - the two fixes are deliberately belt-and-braces.
+ */
+function withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
+  const locks = globalThis.navigator?.locks;
+  if (!locks?.request) return fn();
+  return locks.request(REFRESH_LOCK, fn);
+}
+
 async function performRefresh(): Promise<string | null> {
   try {
     const response = await send('/api/auth/refresh', {
@@ -180,14 +204,15 @@ async function performRefresh(): Promise<string | null> {
 /**
  * Exchange the httpOnly refresh cookie for a fresh access token.
  *
- * Single-flight: every caller that arrives while a refresh is outstanding gets
- * the SAME promise, so N concurrent 401s produce exactly one network refresh
- * and one cookie rotation. Resolves to the new token, or null if the session
- * is over.
+ * Single-flight on two levels: within this tab every caller that arrives while
+ * a refresh is outstanding gets the SAME promise, and across tabs the Web Lock
+ * serialises those promises, so N concurrent 401s anywhere in this browser
+ * produce one rotation at a time. Resolves to the new token, or null if the
+ * session is over.
  */
 export function refreshSession(): Promise<string | null> {
   if (!inFlightRefresh) {
-    inFlightRefresh = performRefresh().finally(() => {
+    inFlightRefresh = withRefreshLock(performRefresh).finally(() => {
       inFlightRefresh = null;
     });
   }

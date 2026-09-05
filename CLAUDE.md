@@ -118,7 +118,18 @@ POST /api/auth/refresh           (cookie only — NO request body, NO Authorizat
   200       { "access_token": string, "token_type": "bearer", "expires_in": 900 }
             + Set-Cookie: refresh_token=<new jwt>   (rotated on every refresh)
   401       { "error": "Session expired. Please sign in again." }
-            ^ for missing, malformed, expired, or already-rotated cookies alike
+            ^ for missing, malformed and expired cookies alike
+
+  [AMENDMENT 1 — ratified 2026-09-05, post-merge] An ALREADY-ROTATED cookie is no
+  longer unconditionally a 401. Within a grace window (REFRESH_REPLAY_GRACE_SECONDS,
+  default 10s) of its rotation, AND only while some refresh token in the family is
+  still live, a replayed cookie returns 200 with a fresh access token and NO
+  Set-Cookie — the jar already holds the successor. Outside the window, or once the
+  family is dead, it is treated as theft: the family is revoked, token_version is
+  bumped, and the response is the same 401.
+  Rationale: two tabs share a cookie jar but not a single-flight promise, so the
+  losing tab posts the cookie the winner just rotated. Under the pre-amendment rule
+  that benign race signed the user out on every device. See ESCALATIONS below.
 
 POST /api/auth/logout            (cookie; access token optional)
   204       no body. Clears the cookie. Idempotent — 204 even if not logged in.
@@ -161,6 +172,10 @@ A resource that exists but belongs to another user -> 404, NOT 403.
   request once. If the refresh 401s, clear state and route to /login. Never loop.
 - Concurrent 401s share a SINGLE in-flight refresh promise (single-flight), so N failed
   requests trigger one refresh, not N.
+  [AMENDMENT 1] "Concurrent" spans TABS, not just requests. An in-tab promise is
+  per JavaScript realm, so the refresh must additionally be serialised across every
+  document of the origin — `navigator.locks.request()`, falling through uncontended
+  where the API is unavailable (Safari < 15.4, jsdom).
 - Every request to /api/auth/* is sent with `credentials: "include"`.
 
 --- Backend obligations (Instance 1) ---
@@ -382,7 +397,48 @@ CORS (backend):
 ## ESCALATIONS & PROPOSED AMENDMENTS
 <!-- Instances write structured requests + *proposed* amendments here. Never edit the
      frozen block or another instance's section directly. Human resolves. -->
-(empty at start)
+
+No escalations were raised during the build — both instances finished with this
+section empty. The entry below was raised by the Reconciler *after* merge.
+
+### AMENDMENT 1 — Contract 1 · refresh replay · RATIFIED 2026-09-05
+**Raised by:** Reconciler (post-merge integration) · **Ratified by:** human
+
+**Finding.** Every contract passed on both real sides, and the merged system still
+signed users out. Instance 1 implemented refresh rotation with theft detection —
+replaying a rotated cookie revokes the whole family and bumps `token_version`
+(`routers/auth.py`). Instance 2 implemented single-flight refresh correctly
+(`api/client.ts`) — but the in-flight promise is a module variable, so it is
+single-flight per JavaScript realm, i.e. **per tab**. Two tabs share one cookie jar
+and not one promise.
+
+**Reproduced live** against the real API + real Postgres:
+```
+tab A refresh (cookie C1) ......... 200, new access token
+tab B refresh (same cookie C1) .... 401   ← read as theft, family revoked
+tab A's brand-new access token .... 401   ← tab A signed out too
+```
+Because `tv` is asserted on access tokens as well, the lockout is immediate and
+spans every device.
+
+**Why the freeze did not catch it.** Neither side diverged from the contract — the
+contract was underspecified. It said "concurrent 401s" without contemplating more
+than one document, and never mentioned theft detection at all (Instance 1 added it
+as a defensible improvement *beyond* the contract, and flagged the dependency in its
+work log). Instance 2's stub models the cookie as a single mutable slot with no
+`revoked_at` and no replay concept, so it **structurally cannot represent this
+failure** — which is why 114 green frontend tests sat on top of it.
+
+**Resolution — both halves applied:**
+- *Backend:* a replay grace window (`refresh_replay_grace_seconds`, default 10s),
+  gated on the family still being alive. Contract text amended above.
+- *Frontend:* `navigator.locks` around `refreshSession()`, serialising refreshes
+  across tabs. Not itself a contract change — it strengthens how the existing
+  single-flight obligation is met — but the obligation's wording was clarified.
+
+Deliberately belt-and-braces: the lock closes the race in browsers that have the
+API, and the grace window covers those that do not, plus any future client (a mobile
+app, a script) that never implements single-flight at all.
 
 ---
 

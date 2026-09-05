@@ -69,6 +69,26 @@ async def get_refresh_token(db: AsyncSession, jti: str) -> Optional[RefreshToken
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
+async def has_live_refresh_token(db: AsyncSession, user_id: int) -> bool:
+    """Is any refresh token for this user still usable?
+
+    Guards the replay grace window: a replayed cookie is only forgiven while
+    its successor is still alive. If the whole family is already revoked or
+    expired there is no benign race to explain the replay, so it is treated as
+    theft after all.
+    """
+    stmt = (
+        select(RefreshToken.id)
+        .where(
+            RefreshToken.user_id == user_id,
+            RefreshToken.revoked_at.is_(None),
+            RefreshToken.expires_at > utcnow(),
+        )
+        .limit(1)
+    )
+    return (await db.execute(stmt)).scalar_one_or_none() is not None
+
+
 async def revoke_refresh_token(db: AsyncSession, row: RefreshToken) -> None:
     row.revoked_at = utcnow()
     await db.commit()

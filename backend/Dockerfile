@@ -12,10 +12,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# argon2-cffi ships manylinux wheels, but build-essential keeps the image
-# buildable if a transitive dependency ever needs to compile.
+# Every runtime dependency ships a manylinux wheel (argon2-cffi and asyncpg
+# included), so no C toolchain is needed. build-essential + libpq-dev were here
+# "in case a transitive dependency ever needs to compile" and cost ~300MB and
+# roughly half an hour of build time for a case that does not occur. Only curl
+# is kept, for the HEALTHCHECK below. If a future dependency really does need to
+# build from source, prefer a multi-stage build over fattening the runtime image.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential libpq-dev curl \
+    && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

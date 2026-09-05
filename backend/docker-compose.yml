@@ -8,6 +8,12 @@
 # which is what makes local requests same-origin and lets the SameSite=Lax
 # development cookie work over plain http.
 
+# Pin the project name. Without it Compose derives one from the parent directory
+# -- "backend" -- which every project in this ladder shares, so two of them
+# silently collide over container names, volumes and image tags. (Reconciled:
+# an unpinned build here re-tagged a sibling project's backend-api:latest.)
+name: ledgerlite
+
 services:
   db:
     image: postgres:16-alpine

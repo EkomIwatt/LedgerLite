@@ -156,8 +156,26 @@ async def refresh(
         raise expired
 
     if row.revoked_at is not None:
-        # This cookie was already rotated away. Either it leaked or something
-        # replayed it; assume the worst and retire the entire family.
+        # This cookie was already rotated away. Usually that is not theft: two
+        # tabs of one browser share a cookie jar but not a single-flight
+        # promise, so the second can post the cookie the first has just
+        # rotated. Retiring the family there would sign the user out
+        # everywhere for doing nothing wrong.
+        #
+        # So: inside a short grace window, and only while the family is still
+        # alive, answer with a fresh access token. No rotation and no new
+        # cookie -- the jar already holds the successor the winning request
+        # set. Outside the window, or once the family is dead, the replay has
+        # no benign explanation and is treated as theft.
+        grace = settings.refresh_replay_grace_seconds
+        age = (utcnow() - row.revoked_at).total_seconds()
+        if grace > 0 and age <= grace and await crud.has_live_refresh_token(db, user.id):
+            return TokenOut(
+                access_token=create_access_token(user.id, user.token_version),
+                token_type="bearer",
+                expires_in=settings.access_token_ttl_seconds,
+            )
+
         await crud.revoke_all_refresh_tokens(db, user.id)
         await crud.bump_token_version(db, user)
         raise expired

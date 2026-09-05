@@ -28,11 +28,21 @@ export default defineConfig({
     // trouble and the suite has no cross-test global state that needs process
     // isolation, since each file resets the mock backend itself.
     pool: 'threads',
+    // Run test files one at a time. Under parallelism on this path, several
+    // files each transform the lazy Recharts dashboard chunk at once and the
+    // slowest blows the timeout below - 3 failures in the parallel run, all in
+    // app.test.tsx, none reproducible in isolation. Sequential is also *faster*
+    // here (45s vs 132s), so this costs nothing.
+    fileParallelism: false,
     // The dashboard is a lazily-imported chunk that pulls in Recharts, and
     // Vitest transforms it on first use inside the test run. That one import
     // can take several seconds on a cold run, which has nothing to do with the
     // behaviour under test - so the default 5s ceiling is raised rather than
     // the code being un-split to suit the test runner.
-    testTimeout: 20000,
+    // Raised again (20s -> 45s) during reconciliation: even serialised, a cold
+    // transform of that chunk can pass 20s on this path, and the affected test
+    // passes reliably in isolation. The ceiling is environment tolerance, not a
+    // claim about how long the behaviour under test should take.
+    testTimeout: 45000,
   },
 });

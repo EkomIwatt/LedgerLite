@@ -229,7 +229,38 @@ async def test_refresh_rotates_the_cookie(user_a):
     assert after != before
 
 
-async def test_a_rotated_cookie_no_longer_works(user_a, make_client):
+async def test_a_rotated_cookie_is_forgiven_inside_the_grace_window(user_a, make_client):
+    """The two-tab race (Contract 1, ratified amendment).
+
+    Two tabs share a cookie jar but not a single-flight promise, so the loser
+    posts the cookie the winner has just rotated. Immediately afterwards that
+    is a benign race: it gets a working access token, and nobody is signed out.
+    """
+    original = user_a.client.cookies.get(COOKIE)
+    assert (await user_a.client.post("/api/auth/refresh")).status_code == 200
+
+    replay = await make_client()
+    replay.cookies.set(COOKIE, original)
+    response = await replay.post("/api/auth/refresh")
+
+    assert response.status_code == 200
+    assert set(response.json()) == {"access_token", "token_type", "expires_in"}
+    # No second rotation: the jar already holds the winner's cookie.
+    assert refresh_cookie_value(response) is None
+    # The access token it hands back actually works...
+    token = response.json()["access_token"]
+    me = await replay.get("/api/auth/me", headers={"Authorization": "Bearer %s" % token})
+    assert me.status_code == 200
+    # ...and the winning tab is untouched.
+    assert (await user_a.client.post("/api/auth/refresh")).status_code == 200
+
+
+async def test_a_rotated_cookie_outside_the_grace_window_is_theft(
+    user_a, make_client, monkeypatch
+):
+    """Past the window the replay has no benign explanation: retire the family."""
+    monkeypatch.setattr(settings, "refresh_replay_grace_seconds", 0)
+
     original = user_a.client.cookies.get(COOKIE)
     assert (await user_a.client.post("/api/auth/refresh")).status_code == 200
 
@@ -239,18 +270,23 @@ async def test_a_rotated_cookie_no_longer_works(user_a, make_client):
     assert response.status_code == 401
     assert response.json() == {"error": "Session expired. Please sign in again."}
 
+    # The current, legitimately-rotated cookie is now dead too.
+    assert (await user_a.client.post("/api/auth/refresh")).status_code == 401
 
-async def test_replaying_a_rotated_cookie_retires_the_whole_family(user_a, make_client):
-    """Rotation reuse is treated as theft, not as a stale tab."""
+
+async def test_replay_is_theft_once_the_family_is_dead(user_a, make_client):
+    """Inside the window, but with no live token left, still theft.
+
+    Logging out revokes the family; a replayed cookie arriving afterwards is
+    not a racing tab, so the grace window must not resurrect it.
+    """
     original = user_a.client.cookies.get(COOKIE)
     assert (await user_a.client.post("/api/auth/refresh")).status_code == 200
+    assert (await user_a.client.post("/api/auth/logout")).status_code == 204
 
     replay = await make_client()
     replay.cookies.set(COOKIE, original)
     assert (await replay.post("/api/auth/refresh")).status_code == 401
-
-    # The current, legitimately-rotated cookie is now dead too.
-    assert (await user_a.client.post("/api/auth/refresh")).status_code == 401
 
 
 @pytest.mark.parametrize("cookie_value", ["", "garbage", "a.b.c"])

@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_ttl_seconds: int = 900        # 15 minutes  (Contract 1)
     refresh_token_ttl_seconds: int = 2592000   # 30 days     (Contract 1)
+    # How long a just-rotated refresh token still answers instead of being
+    # treated as theft (Contract 1, ratified amendment). Two tabs of one
+    # browser share a cookie jar but not a single-flight promise, so the second
+    # can arrive carrying the cookie the first has just rotated away. That is a
+    # benign race, not a stolen token. Set to 0 to disable the window entirely.
+    refresh_replay_grace_seconds: int = 10
 
     # --- refresh cookie (Contract 1) ---
     cookie_name: str = "refresh_token"
